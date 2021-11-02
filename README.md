@@ -1,0 +1,2 @@
+This repository contains a Java implementation of group based stochastic worm defense system.
+This version uses the UDP protocol for group alerts signaling of a virus detection and TCP/IP protocol for all other communications.

@@ -1,0 +1,299 @@
+<!DOCTYPE html SYSTEM "http://www.thymeleaf.org/dtd/xhtml1-strict-thymeleaf-spring4-4.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <title>Групповая защита</title>
+    <link href="webjars/bootstrap/5.1.0/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        div.panel {
+            margin: 0 0 50px 0;
+        }
+        div.panel-fluid {
+            display: flex;
+            justify-content: center;
+            margin: 20px;
+        }
+    </style>
+</head>
+<body>
+<div class="panel panel-default">
+    <div class="panel-heading panel-fluid">
+        <h1>Групповая защита</h1>
+    </div>
+    <div class="panel-body panel-fluid">
+        <button type="button" class="btn btn-primary" onclick="start();">Запуск/Перезапуск</button>
+        <span style="width: 10px;"></span>
+        <button type="button" class="btn btn-primary" onclick="startAnalysis();">Запуск/Перезапуск анализа</button>
+        <span style="width: 10px;"></span>
+        <button type="button" class="btn btn-primary" onclick="stopRun();">Стоп</button>
+    </div>
+    <div class="panel-body panel-fluid">
+        <label for="runNumber">Параметр t-Student &alpha;:</label>
+        <input id="tStudentAlpha" style="margin: 0 10px; width: 100px;" th:value="${tStudentAlpha}"/>
+        <label for="runNumber">Шаг dt:</label>
+        <input id="dt" style="margin: 0 10px; width: 100px;" readonly="readonly" th:value="${dt}"/>
+        <label for="runNumber">Прогон:</label>
+        <input id="runNumber" style="margin: 0 10px; width: 100px;" readonly="readonly"/>
+        <label for="runNumber">макс. до:</label>
+        <input id="maxRunNumber" style="margin: 0 10px; width: 100px;" value="300"/>
+        <label for="simulationTime">Время симуляции:</label>
+        <input id="simulationTime" style="margin: 0 10px; width: 100px;" readonly="readonly"/>
+    </div>
+    <div class="panel-body panel-fluid">
+        <table class="table" style="width: 50%;">
+            <thead>
+            <tr>
+                <th scope="col" class="text-center">Параметр</th>
+                <th scope="col" class="text-center">Среднее</th>
+                <th scope="col" class="text-center">Доверительный интервал</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr>
+                <td>Процент зараженных</td>
+                <td id="percentInfectedAverage" class="text-center"></td>
+                <td id="percentInfectedAverageInterval" class="text-center"></td>
+            </tr>
+            <tr>
+                <td>Макс. скорость распространения</td>
+                <td id="maxInfectionSpeedAverage" class="text-center"></td>
+                <td id="maxInfectionSpeedAverageInterval" class="text-center"></td>
+            </tr>
+            <tr>
+                <td>Время до насыщения</td>
+                <td id="saturationTimeAverage" class="text-center"></td>
+                <td id="saturationTimeAverageInterval" class="text-center"></td>
+            </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+<div id="chartContainer" style="height: 370px; max-width: 920px; margin: 0px auto;"></div>
+</body>
+<script src="webjars/jquery/3.6.0/jquery.min.js"></script>
+<script src="webjars/bootstrap/5.1.0/js/bootstrap.min.js"></script>
+<script src="webjars/momentjs/2.29.1/moment.js"></script>
+<script src="jquery.canvasjs.min.js"></script>
+<script src="statistics.min.js"></script>
+<script>
+    var stop = false; // stop simulation trigger
+    var T = 1; //max simulation time
+    var dt = parseFloat($('#dt').val()); //time step
+    var NS = 3; //ticks to report saturation
+    var studentAlpha = parseFloat($('#tStudentAlpha').val()); //t-Student alpha parameter
+    var studentCumulativeValue; // t-Student distribution cumulative value;
+    // averages and squared averages
+    var percentInfectedAverage = 0.0, percentInfectedAverageSquared = 0.0;
+    var maxInfectionSpeedAverage = 0.0, maxInfectionSpeedAverageSquared = 0.0;
+    var saturationTimeAverage = 0.0, saturationTimeAverageSquared = 0.0;
+    var NT = Math.round(T / dt); // number of ticks in a simulation run
+    var dtMillis = dt * 1000; //time step in milliseconds
+    var t, dataPoints, chart, numberOfInfected; // chart data
+    var nt, runNumber, runDataPoints; // run data
+    var simulationStart; // simulation start moment object serving to compute the duration from the simulation start
+    var nodes = null; //list of node ip:port addresses
+    var N = null, NSquared = null; // number of nodes
+    $.post('/nodes').done(function (data) {
+        nodes = data;
+        N = nodes.length;
+        NSquared = N * N;
+    });
+
+    function resetChart() {
+        numberOfInfected = 1;
+        dataPoints = [{x: 0, y: 0.1}];
+        chart = new CanvasJS.Chart("chartContainer", {
+            theme: "light2",
+            title: {
+                text: "Infected"
+            },
+            data: [{
+                type: "line",
+                dataPoints: dataPoints
+            }]
+        });
+        chart.render();
+        t = 0;
+    }
+
+    function updateData() {
+        if(stop) return;
+        $.post('/numberOfInfected').done(function(data) {
+            infected = parseInt(data);
+            if(data < numberOfInfected) {
+                resetChart();
+                setTimeout(updateData, dtMillis);
+            } else {
+                dataPoints.push({ x: t, y: infected / N });
+                chart.render();
+                if(t < T) {
+                    t += dt;
+                    setTimeout(updateData, dtMillis);
+                }
+            }
+        });
+    }
+
+    function startProceed() {
+        resetChart();
+        $.post('/start').done(function(){
+            stop = false;
+            updateData();
+        });
+    }
+
+    function start() {
+        stop = true;
+        setTimeout(startProceed, 3000);
+    }
+
+    function updateDataAnalysis() {
+        if(stop) return;
+        $.post('/numberOfInfected').done(function(data) {
+            infected = parseInt(data);
+            if(data < infected) {
+                runDataPoints = [];
+                nt = 0;
+                setTimeout(updateData, dtMillis);
+            } else {
+                $('#simulationTime').val(moment(moment().diff(simulationStart)).utc().format('HH:mm:ss'));
+                runDataPoints.push(infected);
+                if(nt < NT) {
+                    nt++;
+                    setTimeout(updateDataAnalysis, dtMillis);
+                } else {
+                    //Update chart
+                    var maxInfectionSpeed = 0, numberOfInfected = 1;
+                    var saturationTime = 0, count = 0;
+                    for(nt = 0; nt <= NT; nt++) {
+                        var runDataPoint = runDataPoints[nt];
+                        var speed = (runDataPoint - numberOfInfected) / dt;
+                        if(speed > maxInfectionSpeed) {
+                            maxInfectionSpeed = speed;
+                        }
+                        if(runDataPoint <= numberOfInfected && saturationTime == 0) {
+                            count++;
+                            if(count >= NS) {
+                                saturationTime = nt * dt;
+                            }
+                        } else {
+                            count = 0;
+                        }
+                        dataPoints[nt].y = (dataPoints[nt].y * (runNumber - 1) + runDataPoint / N) / runNumber;
+                        numberOfInfected = runDataPoint;
+                    }
+                    console.log('rn=' + runNumber + ' maxInfectionSpeed=' + maxInfectionSpeed);
+                    chart.render();
+
+                    var infectedAtEnd = runDataPoints[NT];
+                    percentInfectedAverage = (percentInfectedAverage * (runNumber - 1) + infectedAtEnd / N) / runNumber;
+                    percentInfectedAverageSquared = (percentInfectedAverageSquared * (runNumber - 1) + infectedAtEnd * infectedAtEnd / NSquared) / runNumber;
+
+                    maxInfectionSpeedAverage = (maxInfectionSpeedAverage * (runNumber - 1) + maxInfectionSpeed / N) / runNumber;
+                    maxInfectionSpeedAverageSquared = (maxInfectionSpeedAverageSquared * (runNumber - 1) + maxInfectionSpeed * maxInfectionSpeed / NSquared) / runNumber;
+
+                    saturationTimeAverage = (saturationTimeAverage * (runNumber - 1) + saturationTime) / runNumber;
+                    saturationTimeAverageSquared = (saturationTimeAverageSquared * (runNumber - 1) + saturationTime * saturationTime) / runNumber;
+
+                    $('#percentInfectedAverage').html(percentInfectedAverage.toFixed(2));
+                    $('#maxInfectionSpeedAverage').html(maxInfectionSpeedAverage.toFixed(2));
+                    $('#saturationTimeAverage').html(saturationTimeAverage.toFixed(2));
+
+                    //Compute confidence intervals
+                    var percentInfectedAverageInterval = '', maxInfectionSpeedAverageInterval = '', saturationTimeAverageInterval = '';
+                    if(runNumber > 2) {
+                        percentInfectedAverageInterval = getIntervalString(percentInfectedAverage, percentInfectedAverageSquared, runNumber);
+                        maxInfectionSpeedAverageInterval = getIntervalString(maxInfectionSpeedAverage, maxInfectionSpeedAverageSquared, runNumber);
+                        saturationTimeAverageInterval = getIntervalString(saturationTimeAverage, saturationTimeAverageSquared, runNumber);
+                    }
+
+                    $('#percentInfectedAverageInterval').html(percentInfectedAverageInterval);
+                    $('#maxInfectionSpeedAverageInterval').html(maxInfectionSpeedAverageInterval);
+                    $('#saturationTimeAverageInterval').html(saturationTimeAverageInterval);
+
+                    if(runNumber <= $('#maxRunNumber').val()) {
+
+                        nt = 0;
+                        runNumber++;
+                        runDataPoints = [];
+
+                        $('#runNumber').val(runNumber);
+                        if(runNumber > 1) {
+                            $.post('/studentCumulativeValue', { degreesOfFreedom: runNumber - 1, alpha: studentAlpha })
+                                .done(function(data) {
+                                    studentCumulativeValue = data;
+                                });
+                        }
+
+                        $.post('/start').done(function () {
+                            updateDataAnalysis();
+                        });
+                    }
+                }
+            }
+        });
+    }
+
+    function getIntervalString(average, averageSquared) {
+        var intervalHalfLength = Math.sqrt((averageSquared - average * average) / runNumber) * studentCumulativeValue;
+        var intervalHalfLengthPercent = intervalHalfLength * 100 / average;
+        return ' [ ' + (average - intervalHalfLength).toFixed(2) + ', ' + (average + intervalHalfLength).toFixed(2) + ' ]'
+            + ' = ' + average.toFixed(3) + ' &plusmn; ' + intervalHalfLength.toFixed(3) + ' (' + intervalHalfLengthPercent.toFixed(1) + '%)';
+    }
+
+    function startAnalysisProceed() {
+
+        stop = false;
+
+        simulationStart = new moment();
+
+        numberOfInfected = 1;
+        dataPoints = [];
+
+        for(nt = 0; nt <= NT; nt++) {
+            dataPoints.push({ x: nt * dt, y: 0 });
+        }
+        chart = new CanvasJS.Chart("chartContainer", {
+            theme: "light2",
+            title: {
+                text: "Процент зараженных"
+            },
+            data: [{
+                type: "line",
+                dataPoints: dataPoints
+            }]
+        });
+        chart.render();
+
+        nt = 0;
+        runNumber = 1;
+        runDataPoints = [];
+
+        $('#runNumber').val(runNumber);
+        $('#simulationTime').val('');
+        $('#percentInfectedAverage').val('');
+        $('#maxInfectionSpeedAverage').val('');
+        $('#saturationTimeAverage').val('');
+
+        percentInfectedAverage = 0.0;
+        percentInfectedAverageSquared = 0.0;
+        maxInfectionSpeedAverage = 0.0;
+        maxInfectionSpeedAverageSquared = 0.0;
+        saturationTimeAverage = 0.0;
+        saturationTimeAverageSquared = 0.0;
+
+        $.post('/start').done(function() {
+            updateDataAnalysis();
+        });
+    }
+
+    function startAnalysis() {
+        stop = true;
+        setTimeout(startAnalysisProceed, 3000);
+    }
+
+    function stopRun() {
+        stop = true;
+    }
+</script>
+</html>
